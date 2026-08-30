@@ -1,7 +1,7 @@
 import json
 import os
 
-from tools import create_tools
+from tools import create_tools, tool_error
 
 
 class Agent:
@@ -52,16 +52,65 @@ class Agent:
         tool_name = tool_call.function.name
 
         try:
-            arguments = json.loads(tool_call.function.arguments)
-        except json.JSONDecodeError as e:
-            return f"Error: invalid tool arguments: {e}"
+            arguments = json.loads(
+                tool_call.function.arguments
+            )
+        except json.JSONDecodeError as error:
+            result = tool_error(
+                tool_name,
+                "invalid_json",
+                f"Invalid tool arguments: {error}",
+            )
+            return json.dumps(result, ensure_ascii=False)
 
+        if not isinstance(arguments, dict):
+            result = tool_error(
+                tool_name,
+                "invalid_arguments",
+                "Tool arguments must be a JSON object.",
+            )
+            return json.dumps(result, ensure_ascii=False)
+        
         tool = self.tools.get(tool_name)
 
         if tool is None:
-            return f"Error: unknown tool '{tool_name}'"
+            result = tool_error(
+                tool_name,
+                "unknown_tool",
+                f"Unknown tool: {tool_name}",
+            )
+            return json.dumps(result, ensure_ascii=False)
 
         try:
-            return str(tool.execute(**arguments))
-        except Exception as e:
-            return f"Error executing {tool_name}: {e}"
+            result = tool.execute(**arguments)
+
+            if not isinstance(result, dict):
+                result = {
+                    "ok": True,
+                    "tool": tool_name,
+                    "result": str(result),
+                }
+
+        except TypeError as error:
+            result = tool_error(
+                tool_name,
+                "invalid_arguments",
+                str(error),
+            )
+       
+        except Exception as error:
+            result = tool_error(
+                tool_name,
+                type(error).__name__,
+                str(error),
+            )
+
+        try:
+            return json.dumps(result, ensure_ascii=False)
+        except (TypeError, ValueError) as error:
+            fallback = tool_error(
+                tool_name,
+                "serialization_error",
+                str(error),
+            )
+            return json.dumps(fallback, ensure_ascii=False)
