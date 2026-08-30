@@ -3,6 +3,30 @@ import locale
 import os
 import subprocess
 
+MAX_FILE_OUTPUT_CHARS = 20000
+MAX_COMMAND_OUTPUT_CHARS = 20000
+TRUNCATION_NOTICE_RESERVE = 256
+
+def truncate_middle(text: str, max_chars: int):
+    """保留输出开头和结尾，确保总长度不超过 max_chars。"""
+    if len(text) <= max_chars:
+        return text
+
+    marker = "\n\n...[OUTPUT TRUNCATED]...\n\n"
+    available = max_chars - len(marker)
+
+    if available <= 0:
+        return marker[:max_chars]
+
+    head_length = available // 2
+    tail_length = available - head_length
+
+    return (
+        text[:head_length] 
+        + marker
+        + (text[-tail_length:] if tail_length > 0 else "")
+    )
+
 
 def decode_command_output(data: bytes):
     """兼容 UTF-8 与 Windows 本地编码的命令输出。"""
@@ -69,7 +93,7 @@ class Tool(ABC):
 # 读取文件
 class ReadFileTool(Tool):
     name = "read_file"
-    description = "读取允许的本地磁盘中指定文件的内容"
+    description = "分段读取允许的本地磁盘中指定文件的内容"
 
     parameters = {
         "type": "object",
@@ -77,17 +101,67 @@ class ReadFileTool(Tool):
             "path": {
                 "type": "string",
                 "description": "相对于workspace的路径，或允许盘符下的绝对路径",
-            }
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "从第几个字符开始读取，默认为0",
+            },
+            "max_chars": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": MAX_FILE_OUTPUT_CHARS,
+                "description": f"最多读取多少字符，默认为{MAX_FILE_OUTPUT_CHARS}",
+            },
+
         },
         "required": ["path"],
+        "additionalProperties": False,
     }
 
-    def execute(self, path: str):
+    def execute(self, 
+                path: str,
+                offset: int = 0,
+                max_chars: int = MAX_FILE_OUTPUT_CHARS):
         try:
+            if not isinstance(offset, int) or offset < 0:
+                raise ValueError("Offset must be a non-negative integer")
+
+            if not isinstance(max_chars, int) or max_chars < 1:
+                raise ValueError("max_chars must be a positive integer")
+
+            max_chars = min(max_chars, MAX_FILE_OUTPUT_CHARS)
             full_path = self.resolve_path(path)
 
-            with open(full_path, "r", encoding="utf-8") as f:
-                return f.read()
+            with open(full_path, "r", encoding="utf-8") as file:
+                content = file.read()
+
+            if offset > len(content):
+                raise ValueError(f"offset {offset} exceeds file length {len(content)}")
+
+            remaining = content[offset:]
+
+            if len(remaining) <= max_chars:
+                return remaining
+
+            # 为截断提示预留空间
+            chunk_limit = min(
+                max_chars,
+                MAX_FILE_OUTPUT_CHARS - TRUNCATION_NOTICE_RESERVE,
+            )
+
+            chunk = remaining[:chunk_limit]
+            next_offset = offset + len(chunk)
+            remaining_chars = len(content) - next_offset
+
+            notice = (
+                "\n\n"
+                f"[FILE TRUNCATED: {remaining_chars} characters remaining)."
+                f"Call read_file again with offset={next_offset}]"
+            )
+
+            available = MAX_FILE_OUTPUT_CHARS - len(notice)
+            return chunk[:available] + notice
 
         except Exception as e:
             return f"Error:{e}"
@@ -188,12 +262,14 @@ class RunCommandTool(Tool):
             error_output = decode_command_output(result.stderr)
 
             if error_output:
-                output += "\n" + error_output
+                if output:
+                    output += "\n\n[STDERR]\n"
+                output += error_output
 
             if not output.strip():
                 output = f"Command finished with exit code {result.returncode}"
 
-            return output
+            return truncate_middle(output, MAX_COMMAND_OUTPUT_CHARS)
 
         except subprocess.TimeoutExpired:
             return "Error: command timed out"
