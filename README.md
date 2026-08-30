@@ -20,4 +20,5 @@ python main.py
 
 Enter `exit` or `quit` to stop. Credentials are read only from environment
 variables or the Git-ignored local `config.py`; do not commit them to the
-repository.
+repository. File tools can use absolute paths on local drives except those
+listed in `DENIED_DRIVES` in `config.py`.

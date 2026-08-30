@@ -18,4 +18,3 @@ class LLM:
         )
 
         return response.choices[0].message
-        

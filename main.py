@@ -4,11 +4,14 @@ from agent import Agent
 from llm import LLM
 
 try:
-    from config import API_KEY, BASE_URL, MODEL
+    import config as local_config
 except ImportError:
-    API_KEY = None
-    BASE_URL = None
-    MODEL = None
+    local_config = None
+
+API_KEY = getattr(local_config, "API_KEY", None)
+BASE_URL = getattr(local_config, "BASE_URL", None)
+DENIED_DRIVES = getattr(local_config, "DENIED_DRIVES", ["C:"])
+MODEL = getattr(local_config, "MODEL", None)
 
 
 def get_settings():
@@ -25,22 +28,16 @@ def get_settings():
         if not value
     ]
     if missing:
-        raise RuntimeError(
-            "Missing environment variable(s): " + ", ".join(missing)
-        )
+        raise RuntimeError("Missing environment variable(s): " + ", ".join(missing))
 
     return api_key, model, base_url
 
 
 def main():
     api_key, model, base_url = get_settings()
-    llm = LLM(
-        api_key = api_key,
-        model = model,
-        base_url = base_url
-    )
+    llm = LLM(api_key=api_key, model=model, base_url=base_url)
 
-    agent = Agent(llm, workspace = os.getcwd())
+    agent = Agent(llm, workspace=os.getcwd(), denied_drives=DENIED_DRIVES)
 
     while True:
         task = input("You: ").strip()
