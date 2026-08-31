@@ -37,11 +37,11 @@ def main():
     try:
         api_key, model, base_url = get_settings()
         llm = LLM(
-            api_key = api_key, 
-            model = model, 
-            base_url = base_url,
-            max_retries = 3,
-            request_timeout = 60,
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            max_retries=3,
+            request_timeout=60,
         )
 
     except RuntimeError as error:
@@ -85,10 +85,12 @@ def main():
 
             # API错误发生在模型调用边界，
             # 添加一条本地Assistant消息保持历史完整
-            agent.messages.append({
-                "role": "assistant",
-                "content": message,
-            })
+            agent.messages.append(
+                {
+                    "role": "assistant",
+                    "content": message,
+                }
+            )
 
             print(f"\nAgent: {message}\n")
 
@@ -100,12 +102,12 @@ def main():
             print("\nAgent: Current task cancelled by user.\n")
 
         except Exception as error:
-             # 未预期异常不应导致整个交互程序退出
-             del agent.messages[history_start:]
-             print(
-                 "\nAgent: Task failed with an unexpected "
-                 f"error: {type(error).__name__}: {error}\n"
-             )
+            # 未预期异常不应导致整个交互程序退出
+            del agent.messages[history_start:]
+            print(
+                "\nAgent: Task failed with an unexpected "
+                f"error: {type(error).__name__}: {error}\n"
+            )
 
 
 if __name__ == "__main__":
