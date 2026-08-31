@@ -18,6 +18,15 @@ $env:OPENAI_BASE_URL = "https://your-gateway.example/v1"
 python main.py
 ```
 
+To use the desktop interface:
+
+```powershell
+.\.venv\Scripts\python.exe ui.py
+```
+
+The desktop interface displays model steps and tool execution progress in real
+time while the agent is working.
+
 Enter `exit` or `quit` to stop. Credentials are read only from environment
 variables or the Git-ignored local `config.py`; do not commit them to the
 repository. File tools can use absolute paths on local drives except those

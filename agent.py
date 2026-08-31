@@ -36,6 +36,9 @@ class Agent:
                 "You can read and write files, inspect directories, "
                 "and execute commands using the provided tools. "
                 "Use tools when necessary to complete the user's task."
+                "You are running on Windows. "
+                "When running a compiled executable, use its .exe filename, "
+                "for example .\\program.exe. Do not use bash or Unix-style ./program commands. "
             ),
         }
 
@@ -67,6 +70,102 @@ class Agent:
             return result
 
         return json.dumps(result, ensure_ascii=False)
+
+    def _emit_event(self, callback, event_type, **data):
+        """发送运行事件；界面回调失败不能中断 Agent。"""
+        if callback is None:
+            return
+
+        try:
+            callback({"type": event_type, **data})
+        except Exception:
+            pass
+
+    def _describe_tool_call(self, tool_call):
+        """生成适合界面显示的精简参数说明。"""
+        try:
+            arguments = json.loads(tool_call.function.arguments)
+        except (json.JSONDecodeError, TypeError):
+            return "参数不是有效 JSON"
+
+        if not isinstance(arguments, dict):
+            return "参数格式错误"
+
+        tool_name = tool_call.function.name
+        path = arguments.get("path")
+
+        if tool_name == "write_file":
+            content = arguments.get("content", "")
+            return f"{path} · 写入 {len(str(content))} 个字符"
+
+        if tool_name == "edit_file":
+            return f"{path} · 局部替换"
+
+        if tool_name == "read_file":
+            offset = arguments.get("offset", 0)
+            return f"{path} · 从字符 {offset} 开始"
+
+        if tool_name == "list_files":
+            return str(path or ".")
+
+        if tool_name == "run_command":
+            command_args = arguments.get("args", [])
+            if not isinstance(command_args, list):
+                command_args = [command_args]
+
+            command = " ".join(
+                [str(arguments.get("program", ""))]
+                + [str(arg) for arg in command_args]
+            ).strip()
+            return self._shorten_event_text(command, 180)
+
+        return str(path or "")
+
+    def _describe_tool_result(self, result):
+        """从结构化工具结果提取简短状态，不展示大段文件或命令输出。"""
+        if isinstance(result, str):
+            try:
+                payload = json.loads(result)
+            except json.JSONDecodeError:
+                return self._shorten_event_text(result, 180)
+        else:
+            payload = result
+
+        if not isinstance(payload, dict):
+            return self._shorten_event_text(str(payload), 180)
+
+        if payload.get("ok") is False:
+            error = payload.get("error", {})
+            return self._shorten_event_text(
+                str(error.get("message", "工具执行失败")),
+                180,
+            )
+
+        tool_name = payload.get("tool")
+
+        if tool_name == "read_file":
+            return f"读取 {payload.get('returned_chars', 0)} 个字符"
+
+        if tool_name == "write_file":
+            return f"写入 {payload.get('characters_written', 0)} 个字符"
+
+        if tool_name == "edit_file":
+            return f"完成 {payload.get('replacements', 0)} 处替换"
+
+        if tool_name == "list_files":
+            return f"发现 {payload.get('count', 0)} 个条目"
+
+        if tool_name == "run_command":
+            return f"退出码 {payload.get('exit_code')}"
+
+        return "执行完成"
+
+    def _shorten_event_text(self, text, limit):
+        text = str(text)
+        if len(text) <= limit:
+            return text
+
+        return text[:limit] + "…"
 
     def _append_skipped_tool_results(
         self,
@@ -162,8 +261,10 @@ class Agent:
 
         return message
 
-    def run(self, task: str):
+    def run(self, task: str, event_callback=None):
         self.messages.append({"role": "user", "content": task})
+
+        self._emit_event(event_callback, "task_started")
 
         total_tool_calls = 0
         consecutive_errors = 0
@@ -171,6 +272,12 @@ class Agent:
         for step in range(1, self.max_steps + 1):
             # 每次调用模型前压缩上下文
             self.messages = self.context_manager.compact(self.messages)
+
+            self._emit_event(
+                event_callback,
+                "model_started",
+                step=step,
+            )
 
             response = self.llm.chat(
                 self.messages,
@@ -181,6 +288,13 @@ class Agent:
             self.messages.append(self._assistant_message_to_dict(response))
 
             tool_calls = response.tool_calls or []
+
+            self._emit_event(
+                event_callback,
+                "model_finished",
+                step=step,
+                tool_count=len(tool_calls),
+            )
 
             # 如果没有工具调用，说明模型已经给出最终回答
             if not tool_calls:
@@ -209,12 +323,38 @@ class Agent:
                         message,
                     )
 
+                    self._emit_event(
+                        event_callback,
+                        "stopped",
+                        message=message,
+                    )
+
                     return self._stop_agent(message)
 
                 # 执行工具
                 total_tool_calls += 1
+
+                self._emit_event(
+                    event_callback,
+                    "tool_started",
+                    tool=tool_call.function.name,
+                    detail=self._describe_tool_call(tool_call),
+                    call_number=total_tool_calls,
+                )
+
                 result = self._execute_tool(tool_call)
                 serialized_result = self._serialize_tool_result(result)
+
+                tool_failed = self._is_tool_error(result)
+
+                self._emit_event(
+                    event_callback,
+                    "tool_finished",
+                    tool=tool_call.function.name,
+                    ok=not tool_failed,
+                    detail=self._describe_tool_result(result),
+                    call_number=total_tool_calls,
+                )
 
                 # 工具执行结果必须重新传给模型
                 self.messages.append(
@@ -226,7 +366,7 @@ class Agent:
                 )
 
                 # 统计连续错误次数
-                if self._is_tool_error(result):
+                if tool_failed:
                     consecutive_errors += 1
                 else:
                     consecutive_errors = 0
@@ -247,13 +387,25 @@ class Agent:
                         message,
                     )
 
+                    self._emit_event(
+                        event_callback,
+                        "stopped",
+                        message=message,
+                    )
+
                     return self._stop_agent(message)
 
-        return self._stop_agent(
+        message = (
             "Agent stopped after reaching the maximum "
             f"number of model steps ({self.max_steps}). "
             f"Total tool calls executed: {total_tool_calls}."
         )
+        self._emit_event(
+            event_callback,
+            "stopped",
+            message=message,
+        )
+        return self._stop_agent(message)
 
     def _execute_tool(self, tool_call):
         tool_name = tool_call.function.name

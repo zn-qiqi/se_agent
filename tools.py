@@ -572,7 +572,10 @@ class ListFilesTool(Tool):
 # 执行
 class RunCommandTool(Tool):
     name = "run_command"
-    description = "安全执行编译、测试或运行命令。program和args必须分别提供。"
+    description = (
+        "安全执行编译、测试或运行命令。program和args必须分别提供；"
+        "允许直接运行未禁用盘符中真实存在的.exe文件。"
+    )
 
     parameters = {
         "type": "object",
@@ -608,33 +611,17 @@ class RunCommandTool(Tool):
 
     def _resolve_program(self, program):
         program_name = self._program_name(program)
+        explicit_path = os.path.isabs(program) or bool(os.path.dirname(program))
 
-        # 允许白名单中的系统程序
-        if program_name in SAFE_PROGRAMS:
+        # 仅允许通过PATH查找白名单程序。显式路径仍需接受盘符检查，
+        # 防止C:\other\python.exe之类的路径绕过禁止盘符。
+        if program_name in SAFE_PROGRAMS and not explicit_path:
             return program
 
-        # 允许运行workspace内生成的exe
-        candidate = os.path.realpath(os.path.join(self.workspace, program))
+        # 显式或相对.exe路径可以位于任意未禁用的本地盘符。
+        candidate = self.resolve_path(program)
 
-        try:
-            inside_workspace = (
-                os.path.commonpath(
-                    [
-                        self.workspace,
-                        candidate,
-                    ]
-                )
-                == self.workspace
-            )
-
-        except ValueError:
-            inside_workspace = False
-
-        if (
-            inside_workspace
-            and candidate.lower().endswith(".exe")
-            and os.path.isfile(candidate)
-        ):
+        if candidate.lower().endswith(".exe") and os.path.isfile(candidate):
             return candidate
 
         raise ValueError(f"Program is not allowed: {program}")

@@ -39,6 +39,32 @@ class SuccessTool:
 
 
 class AgentTests(unittest.TestCase):
+    def test_run_emits_realtime_progress_events(self):
+        tool_call = make_tool_call("call-1", "success")
+        llm = SequenceLLM(
+            [
+                SimpleNamespace(content=None, tool_calls=[tool_call]),
+                SimpleNamespace(content="done", tool_calls=[]),
+            ]
+        )
+        agent = Agent(llm)
+        agent.tools["success"] = SuccessTool()
+        events = []
+
+        result = agent.run("test", event_callback=events.append)
+
+        self.assertEqual(result, "done")
+        event_types = [event["type"] for event in events]
+        self.assertEqual(event_types[0], "task_started")
+        self.assertIn("model_started", event_types)
+        self.assertIn("model_finished", event_types)
+        self.assertIn("tool_started", event_types)
+        self.assertIn("tool_finished", event_types)
+        tool_result = next(
+            event for event in events if event["type"] == "tool_finished"
+        )
+        self.assertTrue(tool_result["ok"])
+
     def test_sdk_tool_call_is_saved_as_plain_dictionary(self):
         tool_call = make_tool_call("call-1")
         llm = SequenceLLM(

@@ -11,11 +11,13 @@ class ToolTests(unittest.TestCase):
     def setUp(self):
         tests_directory = Path(__file__).resolve().parent
         self.temporary_directory = tempfile.TemporaryDirectory(dir=tests_directory)
+        self.external_directory = tempfile.TemporaryDirectory(dir=tests_directory)
         self.workspace = self.temporary_directory.name
         self.tools = create_tools(self.workspace)
 
     def tearDown(self):
         self.temporary_directory.cleanup()
+        self.external_directory.cleanup()
 
     def test_write_edit_and_paginated_read(self):
         write_result = self.tools["write_file"].execute(
@@ -81,6 +83,23 @@ class ToolTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["exit_code"], 0)
         self.assertFalse(result["timed_out"])
+
+    def test_executable_outside_workspace_is_allowed_on_allowed_drive(self):
+        executable = Path(self.external_directory.name, "sample.exe")
+        executable.write_bytes(b"MZ")
+
+        resolved = self.tools["run_command"]._resolve_program(str(executable))
+
+        self.assertEqual(resolved, str(executable.resolve()))
+
+    def test_explicit_executable_path_cannot_bypass_denied_drive(self):
+        executable = Path(self.external_directory.name, "python.exe")
+        executable.write_bytes(b"MZ")
+        drive = os.path.splitdrive(str(executable))[0]
+        tools = create_tools(self.workspace, denied_drives=[drive])
+
+        with self.assertRaisesRegex(ValueError, "not allowed"):
+            tools["run_command"]._resolve_program(str(executable))
 
     def test_denied_drive_is_rejected(self):
         drive = os.path.splitdrive(self.workspace)[0]
