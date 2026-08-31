@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 
 SUMMARY_PREFIX = (
     "The following JSON is a machine-generated summary "
@@ -8,16 +9,67 @@ SUMMARY_PREFIX = (
 )
 
 
+def estimate_tokens(value):
+    """
+    粗略估算消息使用的 token 数。
+    中文等非 ASCII 字符按 1 token 计算，
+    英文、代码和 JSON 按约 3 个字符 1 token 计算。
+    """
+    text = json.dumps(
+        value,
+        ensure_ascii=False,
+        default=str,
+    )
+
+    ascii_chars = sum(ord(char) < 128 for char in text)
+    non_ascii_chars = len(text) - ascii_chars
+
+    return non_ascii_chars + math.ceil(ascii_chars / 3)
+
+
 class ContextManager:
     def __init__(
         self,
-        max_context_chars=60000,
+        max_context_tokens=16000,
         max_recent_groups=12,
         min_recent_groups=4,
+        reserved_tokens=4000,
     ):
-        self.max_context_chars = max_context_chars
+        integer_settings = {
+            "max_context_tokens": max_context_tokens,
+            "max_recent_groups": max_recent_groups,
+            "min_recent_groups": min_recent_groups,
+            "reserved_tokens": reserved_tokens,
+        }
+
+        for name, value in integer_settings.items():
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError(f"{name} must be an integer")
+
+        if max_context_tokens <= 0:
+            raise ValueError("max_context_tokens must be positive")
+
+        if reserved_tokens < 0:
+            raise ValueError("reserved_tokens cannot be negative")
+
+        if max_context_tokens <= reserved_tokens:
+            raise ValueError(
+                "max_context_tokens must be greater than reserved_tokens"
+            )
+
+        if min_recent_groups < 1:
+            raise ValueError("min_recent_groups must be at least 1")
+
+        if max_recent_groups < min_recent_groups:
+            raise ValueError(
+                "max_recent_groups must be greater than or equal to "
+                "min_recent_groups"
+            )
+
+        self.max_context_tokens = max_context_tokens
         self.max_recent_groups = max_recent_groups
         self.min_recent_groups = min_recent_groups
+        self.reserved_tokens = reserved_tokens
 
         self.compressed_groups = 0
 
@@ -67,14 +119,20 @@ class ContextManager:
 
         groups = self._group_messages(conversation_messages)
 
-        while len(groups) > self.min_recent_groups and (
-            len(groups) > self.max_recent_groups
-            or self._context_size(
-                system_messages,
-                groups,
+        while len(groups) > 1:
+            over_group_limit = len(groups) > self.max_recent_groups
+            over_token_limit = (
+                self._context_tokens(
+                    system_messages,
+                    groups,
+                )
+                > self.max_context_tokens - self.reserved_tokens
             )
-            > self.max_context_chars
-        ):
+
+            if not over_group_limit and not over_token_limit:
+                break
+
+            # 即使低于首选保留数量，也必须优先满足 token 硬限制。
             removed_group = groups.pop(0)
 
             self._update_summary(removed_group)
@@ -118,7 +176,7 @@ class ContextManager:
 
         return groups
 
-    def _context_size(
+    def _context_tokens(
         self,
         system_messages,
         groups,
@@ -131,13 +189,7 @@ class ContextManager:
         for group in groups:
             messages.extend(group)
 
-        return len(
-            json.dumps(
-                messages,
-                ensure_ascii=False,
-                default=str,
-            )
-        )
+        return estimate_tokens(messages)
 
     def _summary_message(self):
         return {

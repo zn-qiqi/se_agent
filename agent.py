@@ -15,8 +15,9 @@ class Agent:
         denied_drives=None,
         max_tool_calls=40,
         max_consecutive_errors=5,
-        max_context_chars=60000,
+        max_context_tokens=16000,
         max_recent_groups=12,
+        reserved_tokens=4000,
     ):
         self.llm = llm
         self.max_steps = max_steps
@@ -41,8 +42,9 @@ class Agent:
         self.messages = [copy.deepcopy(self.system_message)]
 
         self.context_manager = ContextManager(
-            max_context_chars=max_context_chars,
+            max_context_tokens=max_context_tokens,
             max_recent_groups=max_recent_groups,
+            reserved_tokens=reserved_tokens,
         )
 
         self.tool_schemas = [tool.get_schema() for tool in self.tools.values()]

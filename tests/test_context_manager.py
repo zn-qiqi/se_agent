@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from context_manager import SUMMARY_PREFIX, ContextManager
+from context_manager import SUMMARY_PREFIX, ContextManager, estimate_tokens
 
 
 def tool_message(tool_name, **payload):
@@ -18,9 +18,10 @@ def tool_message(tool_name, **payload):
 class ContextManagerTests(unittest.TestCase):
     def test_compaction_preserves_recent_messages_and_summarizes_old_tools(self):
         manager = ContextManager(
-            max_context_chars=100000,
+            max_context_tokens=100000,
             max_recent_groups=1,
             min_recent_groups=1,
+            reserved_tokens=1000,
         )
         messages = [
             {"role": "system", "content": "system"},
@@ -45,9 +46,10 @@ class ContextManagerTests(unittest.TestCase):
 
     def test_tool_call_and_results_are_not_split(self):
         manager = ContextManager(
-            max_context_chars=100000,
+            max_context_tokens=100000,
             max_recent_groups=1,
             min_recent_groups=1,
+            reserved_tokens=1000,
         )
         tool_call = {
             "role": "assistant",
@@ -68,9 +70,10 @@ class ContextManagerTests(unittest.TestCase):
 
     def test_assistant_notes_have_a_bounded_length(self):
         manager = ContextManager(
-            max_context_chars=100000,
+            max_context_tokens=100000,
             max_recent_groups=1,
             min_recent_groups=1,
+            reserved_tokens=1000,
         )
         messages = [{"role": "system", "content": "system"}]
         messages.extend(
@@ -92,6 +95,42 @@ class ContextManagerTests(unittest.TestCase):
         manager.restore(snapshot)
 
         self.assertEqual(manager.summary["user_requests"], ["original"])
+
+    def test_token_limit_can_compress_below_preferred_minimum(self):
+        manager = ContextManager(
+            max_context_tokens=100,
+            max_recent_groups=10,
+            min_recent_groups=4,
+            reserved_tokens=20,
+        )
+        messages = [{"role": "system", "content": "system"}]
+        messages.extend(
+            {"role": "user", "content": "x" * 300}
+            for _ in range(5)
+        )
+
+        compacted = manager.compact(messages)
+        conversation_messages = [
+            message
+            for message in compacted
+            if message["role"] != "system"
+        ]
+
+        self.assertEqual(len(conversation_messages), 1)
+        self.assertEqual(manager.compressed_groups, 4)
+
+    def test_token_estimator_counts_non_ascii_text_conservatively(self):
+        self.assertGreater(
+            estimate_tokens("中文中文"),
+            estimate_tokens("abcd"),
+        )
+
+    def test_invalid_token_budget_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "greater than reserved_tokens"):
+            ContextManager(
+                max_context_tokens=100,
+                reserved_tokens=100,
+            )
 
 
 if __name__ == "__main__":
