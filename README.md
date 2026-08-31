@@ -22,3 +22,12 @@ Enter `exit` or `quit` to stop. Credentials are read only from environment
 variables or the Git-ignored local `config.py`; do not commit them to the
 repository. File tools can use absolute paths on local drives except those
 listed in `DENIED_DRIVES` in `config.py`.
+
+## Test
+
+The test suite uses Python's built-in `unittest` module and does not make real
+model API requests:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
