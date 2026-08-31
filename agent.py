@@ -1,6 +1,8 @@
+import copy
 import json
 import os
 
+from context_manager import ContextManager
 from tools import create_tools, tool_error
 
 
@@ -13,6 +15,8 @@ class Agent:
         denied_drives=None,
         max_tool_calls=40,
         max_consecutive_errors=5,
+        max_context_chars=60000,
+        max_recent_groups=12,
     ):
         self.llm = llm
         self.max_steps = max_steps
@@ -24,17 +28,22 @@ class Agent:
             denied_drives,
         )
 
-        self.messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a coding agent. "
-                    "You can read and write files, inspect directories, "
-                    "and execute commands using the provided tools. "
-                    "Use tools when necessary to complete the user's task."
-                ),
-            }
-        ]
+        self.system_message = {
+            "role": "system",
+            "content": (
+                "You are a coding agent. "
+                "You can read and write files, inspect directories, "
+                "and execute commands using the provided tools. "
+                "Use tools when necessary to complete the user's task."
+            ),
+        }
+
+        self.messages = [copy.deepcopy(self.system_message)]
+
+        self.context_manager = ContextManager(
+            max_context_chars=max_context_chars,
+            max_recent_groups=max_recent_groups,
+        )
 
         self.tool_schemas = [tool.get_schema() for tool in self.tools.values()]
 
@@ -84,6 +93,59 @@ class Agent:
                 }
             )
 
+    # 类消息转换方法
+    def _assistant_message_to_dict(
+        self,
+        response,
+    ):
+        message = {
+            "role": "assistant",
+            "content": response.content,
+        }
+
+        if response.tool_calls:
+            tool_calls = []
+
+            for tool_call in response.tool_calls:
+                if hasattr(tool_call, "model_dump"):
+                    tool_call_data = tool_call.model_dump(exclude_none=True)
+
+                else:
+                    tool_call_data = {
+                        "id": tool_call.id,
+                        "type": getattr(
+                            tool_call,
+                            "type",
+                            "function",
+                        ),
+                        "function": {
+                            "name": (tool_call.function.name),
+                            "arguments": (tool_call.function.arguments),
+                        },
+                    }
+
+                tool_calls.append(tool_call_data)
+
+            message["tool_calls"] = tool_calls
+
+        return message
+
+    # 上下文控制方法
+    def reset_context(self):
+        self.context_manager.reset()
+
+        self.messages = [copy.deepcopy(self.system_message)]
+
+    def snapshot_context(self):
+        return {
+            "messages": copy.deepcopy(self.messages),
+            "context_manager": (self.context_manager.snapshot()),
+        }
+
+    def restore_context(self, snapshot):
+        self.messages = copy.deepcopy(snapshot["messages"])
+        self.context_manager.restore(snapshot["context_manager"])
+
     def _stop_agent(self, message):
         """
         记录控制器产生的停止消息，保证下一次用户输入时，
@@ -105,10 +167,16 @@ class Agent:
         consecutive_errors = 0
 
         for step in range(1, self.max_steps + 1):
-            response = self.llm.chat(self.messages, self.tool_schemas)
+            # 每次调用模型前压缩上下文
+            self.messages = self.context_manager.compact(self.messages)
 
-            # 把模型回复加入历史
-            self.messages.append(response)
+            response = self.llm.chat(
+                self.messages,
+                self.tool_schemas,
+            )
+
+            # SDK对象转换为普通字典后保存
+            self.messages.append(self._assistant_message_to_dict(response))
 
             tool_calls = response.tool_calls or []
 

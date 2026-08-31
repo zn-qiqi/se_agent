@@ -72,8 +72,14 @@ def main():
         if not task:
             continue
 
-        # 用于异常时恢复对话历史
-        history_start = len(agent.messages)
+        if task.lower() == "/new":
+            agent.reset_context()
+
+            print("\nAgent: Conversation context cleared.\n")
+
+            continue
+
+        context_snapshot = agent.snapshot_context()
 
         try:
             result = agent.run(task)
@@ -95,15 +101,13 @@ def main():
             print(f"\nAgent: {message}\n")
 
         except KeyboardInterrupt:
-            # 中断可能发生在工具调用中间，
-            # 删除本次任务消息以避免留下不完整Tool Call
-            del agent.messages[history_start:]
+            agent.restore_context(context_snapshot)
 
             print("\nAgent: Current task cancelled by user.\n")
 
         except Exception as error:
-            # 未预期异常不应导致整个交互程序退出
-            del agent.messages[history_start:]
+            agent.restore_context(context_snapshot)
+
             print(
                 "\nAgent: Task failed with an unexpected "
                 f"error: {type(error).__name__}: {error}\n"
