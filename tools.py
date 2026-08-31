@@ -7,6 +7,36 @@ MAX_FILE_OUTPUT_CHARS = 20000
 MAX_COMMAND_OUTPUT_CHARS = 20000
 TRUNCATION_NOTICE_RESERVE = 256
 
+SAFE_PROGRAMS = {
+    "python",
+    "python3",
+    "py",
+    "pytest",
+    "gcc",
+    "g++",
+    "clang",
+    "clang++",
+    "cmake",
+    "ctest",
+    "make",
+    "ninja",
+    "git",
+    "node",
+    "npm",
+    "java",
+    "javac",
+}
+
+READ_ONLY_GIT_COMMANDS = {
+    "status",
+    "diff",
+    "log",
+    "show",
+    "grep",
+    "ls-files",
+}
+
+
 def truncate_middle(text: str, max_chars: int):
     """截断函数返回内容、是否截断、原始长度"""
     original_chars = len(text)
@@ -21,18 +51,17 @@ def truncate_middle(text: str, max_chars: int):
     available = max_chars - len(marker)
 
     if available <= 0:
-        return marker[:max_chars]
+        return marker[:max_chars], True, original_chars
 
     head_length = available // 2
     tail_length = available - head_length
 
     truncated_text = (
-        text[:head_length] 
-        + marker 
-        + (text[-tail_length:] if tail_length else "")
-        )
+        text[:head_length] + marker + (text[-tail_length:] if tail_length else "")
+    )
 
     return truncated_text, True, original_chars
+
 
 def tool_success(tool_name: str, **data):
     return {
@@ -41,13 +70,14 @@ def tool_success(tool_name: str, **data):
         **data,
     }
 
+
 def tool_error(
-        tool_name: str,
-        error_type: str,
-        message: str,
-        **data,
+    tool_name: str,
+    error_type: str,
+    message: str,
+    **data,
 ):
-    return (
+    return {
         "ok": False,
         "tool": tool_name,
         "error": {
@@ -55,8 +85,7 @@ def tool_error(
             "message": message,
         },
         **data,
-    )
-   
+    }
 
 
 def decode_command_output(data: bytes):
@@ -144,16 +173,14 @@ class ReadFileTool(Tool):
                 "maximum": MAX_FILE_OUTPUT_CHARS,
                 "description": f"最多读取多少字符，默认为{MAX_FILE_OUTPUT_CHARS}",
             },
-
         },
         "required": ["path"],
         "additionalProperties": False,
     }
 
-    def execute(self, 
-                path: str,
-                offset: int = 0,
-                max_chars: int = MAX_FILE_OUTPUT_CHARS):
+    def execute(
+        self, path: str, offset: int = 0, max_chars: int = MAX_FILE_OUTPUT_CHARS
+    ):
         try:
             if not isinstance(offset, int) or offset < 0:
                 return tool_error(
@@ -180,8 +207,8 @@ class ReadFileTool(Tool):
                     self.name,
                     "invalid_offset",
                     f"offset {offset} exceeds file length {len(content)}",
-                    path = path,
-                    total_chars = len(content),
+                    path=path,
+                    total_chars=len(content),
                 )
 
             remaining = content[offset:]
@@ -192,14 +219,14 @@ class ReadFileTool(Tool):
 
             return tool_success(
                 self.name,
-                path = path,
-                content = chunk,
-                offset = offset,
-                returned_chars = len(chunk),
-                total_chars = len(content),
-                truncated = truncated,
-                next_offset = next_offset if truncated else None,
-                remaining_chars = max(len(content) - next_offset, 0),
+                path=path,
+                content=chunk,
+                offset=offset,
+                returned_chars=len(chunk),
+                total_chars=len(content),
+                truncated=truncated,
+                next_offset=next_offset if truncated else None,
+                remaining_chars=max(len(content) - next_offset, 0),
             )
 
         except FileNotFoundError:
@@ -207,7 +234,7 @@ class ReadFileTool(Tool):
                 self.name,
                 "file_not_found",
                 f"File not found: {path}",
-                path = path,
+                path=path,
             )
 
         except PermissionError:
@@ -215,7 +242,7 @@ class ReadFileTool(Tool):
                 self.name,
                 "permission_denied",
                 f"Permission denied: {path}",
-                path = path,
+                path=path,
             )
 
         except UnicodeDecodeError as error:
@@ -223,7 +250,7 @@ class ReadFileTool(Tool):
                 self.name,
                 "decode_error",
                 str(error),
-                path = path,
+                path=path,
             )
 
         except Exception as error:
@@ -231,7 +258,7 @@ class ReadFileTool(Tool):
                 self.name,
                 type(error).__name__,
                 str(error),
-                path = path,
+                path=path,
             )
 
 
@@ -267,8 +294,8 @@ class WriteFileTool(Tool):
 
             return tool_success(
                 self.name,
-                path = path,
-                characters_written = len(content),
+                path=path,
+                characters_written=len(content),
             )
 
         except PermissionError:
@@ -276,7 +303,7 @@ class WriteFileTool(Tool):
                 self.name,
                 "permission_denied",
                 f"Permission denied: {path}",
-                path = path,
+                path=path,
             )
 
         except Exception as error:
@@ -284,7 +311,7 @@ class WriteFileTool(Tool):
                 self.name,
                 type(error).__name__,
                 str(error),
-                path = path,
+                path=path,
             )
 
 
@@ -312,20 +339,18 @@ class ListFilesTool(Tool):
             for name in sorted(os.listdir(full_path)):
                 item_path = os.path.join(full_path, name)
 
-                entries.append({
-                    "name": name,
-                    "type": (
-                        "directory"
-                        if os.path.isdir(item_path)
-                        else "file"
-                    ),
-                })
+                entries.append(
+                    {
+                        "name": name,
+                        "type": ("directory" if os.path.isdir(item_path) else "file"),
+                    }
+                )
 
             return tool_success(
                 self.name,
-                path = path,
-                count = len(entries),
-                entries = entries,
+                path=path,
+                count=len(entries),
+                entries=entries,
             )
 
         except FileNotFoundError:
@@ -333,7 +358,7 @@ class ListFilesTool(Tool):
                 self.name,
                 "directory_not_found",
                 f"Directory not found: {path}",
-                path = path,
+                path=path,
             )
 
         except PermissionError:
@@ -341,7 +366,7 @@ class ListFilesTool(Tool):
                 self.name,
                 "permission_denied",
                 f"Permission denied: {path}",
-                path = path,
+                path=path,
             )
 
         except Exception as error:
@@ -349,83 +374,145 @@ class ListFilesTool(Tool):
                 self.name,
                 type(error).__name__,
                 str(error),
-                path = path,
+                path=path,
             )
 
 
 # 执行
 class RunCommandTool(Tool):
     name = "run_command"
-    description = "在workspace目录中执行命令行命令，并返回命令输出"
+    description = "安全执行编译、测试或运行命令。program和args必须分别提供。"
 
     parameters = {
         "type": "object",
         "properties": {
-            "command": {"type": "string", "description": "需要执行的终端命令"}
+            "program": {
+                "type": "string",
+                "description": "程序名称",
+            },
+            "args": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "命令参数数组",
+            },
+            "timeout": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 120,
+                "description": "超时秒数，默认30秒",
+            },
         },
-        "required": ["command"],
+        "required": ["program"],
+        "additionalProperties": False,
     }
 
-    def execute(self, command: str):
+    def _program_name(self, program):
+        name = os.path.basename(program).lower()
+
+        for suffix in (".exe", ".cmd", ".bat"):
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+
+        return name
+
+    def _resolve_program(self, program):
+        program_name = self._program_name(program)
+
+        # 允许白名单中的系统程序
+        if program_name in SAFE_PROGRAMS:
+            return program
+
+        # 允许运行workspace内生成的exe
+        candidate = os.path.realpath(os.path.join(self.workspace, program))
+
         try:
+            inside_workspace = (
+                os.path.commonpath(
+                    [
+                        self.workspace,
+                        candidate,
+                    ]
+                )
+                == self.workspace
+            )
+
+        except ValueError:
+            inside_workspace = False
+
+        if (
+            inside_workspace
+            and candidate.lower().endswith(".exe")
+            and os.path.isfile(candidate)
+        ):
+            return candidate
+
+        raise ValueError(f"Program is not allowed: {program}")
+
+    def _check_arguments(self, program, args):
+        if not isinstance(args, list):
+            raise ValueError("args must be an array")
+
+        if not all(isinstance(arg, str) for arg in args):
+            raise ValueError("all arguments must be strings")
+
+        _program_name = self._program_name(program)
+
+        # git仅允许只读操作
+        if _program_name == "git":
+            if not args:
+                raise ValueError("Git subcommand is required")
+
+            if args[0] not in READ_ONLY_GIT_COMMANDS:
+                raise ValueError(f"Git subcommand is not allowed: {args[0]}")
+
+        # 禁止参数引用受限盘符
+        for argument in args:
+            normalized = argument.replace("/", "\\").lower()
+
+            for drive in self.denied_drives:
+                denied_prefix = drive.lower() + "\\"
+
+                if denied_prefix in normalized:
+                    raise ValueError(f"Argument references denied drive {drive}")
+
+    def execute(
+        self,
+        program: str,
+        args=None,
+        timeout: int = 30,
+    ):
+        args = [] if args is None else args
+
+        try:
+            if not isinstance(timeout, int):
+                raise ValueError("timeout must be an integer")
+
+            if timeout < 1 or timeout > 120:
+                raise ValueError("timeout must be between 1 and 120 seconds")
+
+            executable = self._resolve_program(program)
+            self._check_arguments(program, args)
+
+            # 防止项目代码读取模型API Key
+            child_env = os.environ.copy()
+            child_env.pop("OPENAI_API_KEY", None)
+            child_env.pop("DEEPSEEK_API_KEY", None)
+
             result = subprocess.run(
-                command, shell=True, cwd=self.workspace, capture_output=True, timeout=30
+                [executable, *args],
+                shell=False,
+                cwd=self.workspace,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=timeout,
+                env=child_env,
             )
 
             stdout = decode_command_output(result.stdout)
             stderr = decode_command_output(result.stderr)
 
-            # 如果只有一个输出流，允许它使用全部长度
-            # 如果两个流都有内容，则各使用一半
-            if stdout and stderr:
-                stdout_limit = MAX_COMMAND_OUTPUT_CHARS // 2
-                stderr_limit = (
-                    MAX_COMMAND_OUTPUT_CHARS - stdout_limit
-                )
-            elif stdout:
-                stdout_limit = MAX_COMMAND_OUTPUT_CHARS
-                stderr_limit = 0
-            else:
-                stdout_limit = 0
-                stderr_limit = MAX_COMMAND_OUTPUT_CHARS
-
-            stdout, stdout_truncated, stdout_original_chars = (
-                truncate_middle(stdout, stdout_limit)
-            )
-            stderr, stderr_truncated, stderr_original_chars = (
-                truncate_middle(stderr, stderr_limit)
-            )
-
-            command_succeeded = result.returncode == 0
-
-            command_result = {
-                "ok": command_succeeded,
-                "tool": self.name,
-                "command": command,
-                "exit_code": result.returncode,
-                "stdout": stdout,
-                "stderr": stderr,
-                "stdout_truncated": stdout_truncated,
-                "stderr_truncated": stderr_truncated,
-                "stdout_original_chars": stdout_original_chars,
-                "stderr_original_chars": stderr_original_chars,
-                "time_out": False,
-            }
-
-            if not command_succeeded:
-                command_result["error"] = {
-                    "type": "command_failed",
-                    "message": f"Command failed with exit code {result.returncode}",
-                }
-
-            return command_result
-
-        except subprocess.TimeoutExpired as error:
-            stdout = decode_command_output(error.stdout or b"")
-            stderr = decode_command_output(error.stderr or b"")
-
             stdout, stdout_truncated, _ = truncate_middle(
-                stdout, 
+                stdout,
                 MAX_COMMAND_OUTPUT_CHARS // 2,
             )
             stderr, stderr_truncated, _ = truncate_middle(
@@ -433,29 +520,57 @@ class RunCommandTool(Tool):
                 MAX_COMMAND_OUTPUT_CHARS // 2,
             )
 
+            if result.returncode == 0:
+                return tool_success(
+                    self.name,
+                    program=program,
+                    args=args,
+                    exit_code=result.returncode,
+                    stdout=stdout,
+                    stderr=stderr,
+                    stdout_truncated=stdout_truncated,
+                    stderr_truncated=stderr_truncated,
+                    timed_out=False,
+                )
+
+            return tool_error(
+                self.name,
+                "command_failed",
+                f"command exited with code {result.returncode}",
+                program=program,
+                args=args,
+                exit_code=result.returncode,
+                stdout=stdout,
+                stderr=stderr,
+                stdout_truncated=stdout_truncated,
+                stderr_truncated=stderr_truncated,
+                timed_out=False,
+            )
+
+        except subprocess.TimeoutExpired:
             return tool_error(
                 self.name,
                 "command_timeout",
-                "Command timed out after 30 seconds",
-                command = command,
-                exit_code = None,
-                stdout = stdout,
-                stderr = stderr,
-                stdout_truncated = stdout_truncated,
-                stderr_truncated = stderr_truncated,
-                time_out = True,
+                f"Command timed out after {timeout} seconds",
+                program=program,
+                args=args,
+                exit_code=None,
+                stdout="",
+                stderr="",
+                timed_out=True,
             )
-            
+
         except Exception as error:
             return tool_error(
                 self.name,
                 type(error).__name__,
                 str(error),
-                command = command,
-                exit_code = None,
-                stdout = "",
-                stderr = "",
-                time_out = False,
+                program=program,
+                args=args,
+                exit_code=None,
+                stdout="",
+                stderr="",
+                timed_out=False,
             )
 
 
