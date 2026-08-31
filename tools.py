@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 import locale
 import os
 import subprocess
+import tempfile
 
 MAX_FILE_OUTPUT_CHARS = 20000
 MAX_COMMAND_OUTPUT_CHARS = 20000
@@ -87,6 +88,44 @@ def tool_error(
         **data,
     }
 
+def atomic_write_text(full_path: str, content: str):
+    """
+    先写入同目录临时文件，成功后再替换目标文件。
+    os.replace在同一磁盘内是原子操作。
+    """
+    parent = os.path.dirname(full_path)
+
+    if parent:
+        os.makedirs(parent, exist_ok = True)
+
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix = f".{os.path.basename(full_path)}.",
+        suffix = ".tmp",
+        dir = parent,
+    )
+
+    try:
+        temporary_file = os.fdopen(
+            descriptor,
+            "w",
+            encoding = "utf-8",
+            newline = "",
+        )
+        descriptor = None
+
+        with temporary_file:
+            temporary_file.write(content)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+
+        os.replace(temporary_path, full_path)
+
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
 
 def decode_command_output(data: bytes):
     """兼容 UTF-8 与 Windows 本地编码的命令输出。"""
@@ -265,7 +304,7 @@ class ReadFileTool(Tool):
 # 写入文件
 class WriteFileTool(Tool):
     name = "write_file"
-    description = "向允许的本地磁盘中指定文件写入内容"
+    description = "安全地创建或整体覆盖文件，写入过程使用临时文件和原子替换。"
 
     parameters = {
         "type": "object",
@@ -277,24 +316,32 @@ class WriteFileTool(Tool):
             "content": {"type": "string", "description": "需要写入文件的内容"},
         },
         "required": ["path", "content"],
+        "additionalProperties": False,
     }
 
     def execute(self, path: str, content: str):
         try:
+            if not isinstance(content, str):
+                return tool_error(
+                    self.name,
+                    "invalid_argument",
+                    "content must be a string",
+                    path = path,
+                )
+            
             full_path = self.resolve_path(path)
+            file_existed = os.path.exists(full_path)
 
-            # 父目录不存在则创建
-            parent = os.path.dirname(full_path)
-
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-
-            with open(full_path, "w", encoding="utf-8") as file:
-                file.write(content)
+            atomic_write_text(
+                full_path,
+                content,
+            )
 
             return tool_success(
                 self.name,
                 path=path,
+                created = not file_existed,
+                overwritten = file_existed,
                 characters_written=len(content),
             )
 
@@ -312,6 +359,150 @@ class WriteFileTool(Tool):
                 type(error).__name__,
                 str(error),
                 path=path,
+            )
+
+class EditFileTool(Tool):
+    name = "edit_file"
+    description = "局部修改文件。old_text必须在文件中恰好出现一次，否则不会修改文件。"
+
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "相对于workspace的路径，或允许盘下的绝对路径"
+            },
+            "old_text": {
+                "type": "string",
+                "minLength": 1,
+                "description": "需要被替换的原始文本",
+            },
+            "new_text": {
+                "type": "string",
+                "description": "替换后的新文本",
+            },         
+        },
+        "required": [
+            "path",
+            "old_text",
+            "new_text",
+        ],
+        "additionalProperties": False,      
+    }
+
+    def execute(
+        self, 
+        path: str,
+        old_text: str,
+        new_text: str,
+    ):
+        try:
+            if not isinstance(old_text, str) or not old_text:
+                return tool_error(
+                    self.name,
+                    "invalid_argument",
+                    "old_text must be a non-empty string",
+                    path = path,
+                )
+
+            if not isinstance(new_text, str):
+                return tool_error(
+                    self.name,
+                    "invalid_argument",
+                    "new_text must be a string",
+                    path = path,
+                )
+
+            full_path = self.resolve_path(path)
+
+            with open(
+                full_path,
+                "r",
+                encoding = "utf-8",
+            ) as file:
+                original_content = file.read()
+
+            match_count = original_content.count(old_text)
+
+            if match_count == 0:
+                return tool_error(
+                    self.name,
+                    "text_not_found",
+                    "old_text was not found in the file",
+                    path = path,
+                    matches = 0,
+                )
+
+            if match_count > 1:
+                return tool_error(
+                    self.name,
+                    "ambiguous_match",
+                    (
+                        "old_text appears more than once; " \
+                        "provide a larger unique text block"
+                    ),
+                    path = path,
+                    matches = match_count,
+                )
+        
+            if old_text == new_text:
+                return tool_error(
+                    self.name,
+                    "no_change",
+                    "old_text and new_text are identical",
+                    path = path,
+                    matches = 1,
+                )
+
+            updated_content = original_content.replace(
+                old_text,
+                new_text,
+                1,
+            )
+
+            atomic_write_text(
+                full_path,
+                updated_content,
+            )
+
+            return tool_success(
+                self.name,
+                path = path,
+                replacements = 1,
+                characters_before = len(original_content),
+                characters_after = len(updated_content),
+            )
+
+        except FileNotFoundError:
+            return tool_error(
+                self.name,
+                "file_not_found",
+                f"File not found: {path}",
+                path = path,
+            )
+
+        except PermissionError:
+            return tool_error(
+                self.name,
+                "permission_denied",
+                f"Permission denied: {path}",
+                path = path,
+            )
+
+        except UnicodeDecodeError as error:
+            return tool_error(
+                self.name,
+                "decode_error",
+                str(error),
+                path = path,
+            )
+
+        except Exception as error:
+            return tool_error(
+                self.name,
+                type(error).__name__,
+                str(error),
+                path = path,
             )
 
 
@@ -579,6 +770,7 @@ def create_tools(workspace: str, denied_drives=None):
     tools = [
         ReadFileTool(workspace, denied_drives),
         WriteFileTool(workspace, denied_drives),
+        EditFileTool(workspace, denied_drives),
         ListFilesTool(workspace, denied_drives),
         RunCommandTool(workspace, denied_drives),
     ]
