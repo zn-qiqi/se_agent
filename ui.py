@@ -1,3 +1,4 @@
+import inspect
 import os
 import queue
 import threading
@@ -6,7 +7,8 @@ from tkinter import scrolledtext
 
 from agent import Agent
 from llm import LLM, LLMRequestError
-from main import DENIED_DRIVES, get_settings
+from main import DENIED_DRIVES, get_reviewer_settings, get_settings
+from reviewer import ReviewerAgent
 
 
 COLORS = {
@@ -25,9 +27,16 @@ COLORS = {
 
 
 class CodingAgentUI:
-    def __init__(self, root, agent=None, startup_error=None):
+    def __init__(
+        self,
+        root,
+        agent=None,
+        reviewer=None,
+        startup_error=None,
+    ):
         self.root = root
         self.agent = agent
+        self.reviewer = reviewer
         self.busy = False
         self.results = queue.Queue()
 
@@ -337,7 +346,16 @@ class CodingAgentUI:
     def _append_message(self, role, content):
         labels = {
             "user": ("你", "user_label", "user_message"),
-            "agent": ("Agent", "agent_label", "agent_message"),
+            "agent": (
+                "Coding Agent",
+                "agent_label",
+                "agent_message",
+            ),
+            "reviewer": (
+                "Reviewer Agent",
+                "agent_label",
+                "agent_message",
+            ),
             "error": ("错误", "agent_label", "error_message"),
         }
 
@@ -353,19 +371,19 @@ class CodingAgentUI:
         self.chat.configure(state="disabled")
         self.chat.see("end")
 
-    def _append_progress(self, event):
+    def _append_progress(self, event, actor="Coding Agent"):
         event_type = event.get("type")
         text = None
         tag = "process_message"
 
         if event_type == "task_started":
-            text = "执行过程"
+            text = f"{actor} 执行过程"
             tag = "process_label"
 
         elif event_type == "model_started":
             step = event.get("step")
             text = f"○ 第 {step} 步：正在请求模型…"
-            self._set_status(f"第 {step} 步：模型思考中…")
+            self._set_status(f"{actor} 第 {step} 步：模型思考中…")
 
         elif event_type == "model_finished":
             tool_count = event.get("tool_count", 0)
@@ -379,7 +397,7 @@ class CodingAgentUI:
             detail = event.get("detail")
             suffix = f" · {detail}" if detail else ""
             text = f"↳ {tool_name}{suffix}"
-            self._set_status(f"正在执行 {tool_name}…")
+            self._set_status(f"{actor} 正在执行 {tool_name}…")
 
         elif event_type == "tool_finished":
             tool_name = event.get("tool", "tool")
@@ -448,19 +466,19 @@ class CodingAgentUI:
         worker.start()
 
     def _run_agent(self, task):
-        snapshot = self.agent.snapshot_context()
+        snapshot = None
 
         try:
-            result = self.agent.run(
+            snapshot = self.agent.snapshot_context()
+            coding_result = self.agent.run(
                 task,
                 event_callback=lambda event: self.results.put(
                     ("progress", event)
                 ),
             )
-            self.results.put(("agent", result))
 
         except LLMRequestError as error:
-            message = f"任务因 API 错误停止：{error}"
+            message = f"编程任务因 API 错误停止：{error}"
             self.agent.messages.append(
                 {
                     "role": "assistant",
@@ -468,14 +486,71 @@ class CodingAgentUI:
                 }
             )
             self.results.put(("error", message))
+            return
 
         except Exception as error:
-            self.agent.restore_context(snapshot)
+            restore_error = None
+            if snapshot is not None:
+                try:
+                    self.agent.restore_context(snapshot)
+                except Exception as caught_error:
+                    restore_error = caught_error
+
             message = (
-                "任务因未预期错误停止："
+                "编程任务因未预期错误停止："
                 f"{type(error).__name__}: {error}"
             )
+            if restore_error is not None:
+                message += (
+                    "；上下文恢复失败："
+                    f"{type(restore_error).__name__}: {restore_error}"
+                )
             self.results.put(("error", message))
+            return
+
+        # 先显示编程结果，但保持输入框禁用，继续进行独立审查。
+        self.results.put(("coding_result", coding_result))
+
+        try:
+            review_arguments = {
+                "original_task": task,
+                "coding_result": coding_result,
+            }
+            review_parameters = inspect.signature(
+                self.reviewer.review
+            ).parameters.values()
+            supports_events = any(
+                parameter.name == "event_callback"
+                or parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in review_parameters
+            )
+            if supports_events:
+                review_arguments["event_callback"] = (
+                    lambda event: self.results.put(
+                        ("review_progress", event)
+                    )
+                )
+
+            review_result = self.reviewer.review(**review_arguments)
+            self.results.put(("reviewer", review_result))
+
+        except LLMRequestError as error:
+            self.results.put(
+                (
+                    "error",
+                    "代码已经完成，但审查因 API 错误停止："
+                    f"{error}",
+                )
+            )
+
+        except Exception as error:
+            self.results.put(
+                (
+                    "error",
+                    "代码已经完成，但审查失败："
+                    f"{type(error).__name__}: {error}",
+                )
+            )
 
     def _poll_results(self):
         try:
@@ -484,6 +559,15 @@ class CodingAgentUI:
 
                 if role == "progress":
                     self._append_progress(content)
+                    continue
+
+                if role == "review_progress":
+                    self._append_progress(content, actor="Reviewer Agent")
+                    continue
+
+                if role == "coding_result":
+                    self._append_message("agent", content)
+                    self._set_status("Reviewer Agent 正在审查…")
                     continue
 
                 self._append_message(role, content)
@@ -501,6 +585,7 @@ class CodingAgentUI:
             return
 
         self.agent.reset_context()
+        self.reviewer.reset_context()
         self.chat.configure(state="normal")
         self.chat.delete("1.0", "end")
         self.chat.configure(state="disabled")
@@ -508,35 +593,58 @@ class CodingAgentUI:
         self._set_status("就绪")
 
 
-def create_agent():
-    api_key, model, base_url = get_settings()
-    llm = LLM(
-        api_key=api_key,
-        model=model,
-        base_url=base_url,
+def create_agents():
+    coding_api_key, coding_model, coding_base_url = get_settings()
+    reviewer_api_key, reviewer_model, reviewer_base_url = (
+        get_reviewer_settings()
+    )
+
+    coding_llm = LLM(
+        api_key=coding_api_key,
+        model=coding_model,
+        base_url=coding_base_url,
         max_retries=3,
         request_timeout=60,
     )
-    return Agent(
-        llm,
-        workspace=os.getcwd(),
+    reviewer_llm = LLM(
+        api_key=reviewer_api_key,
+        model=reviewer_model,
+        base_url=reviewer_base_url,
+        max_retries=3,
+        request_timeout=60,
+    )
+    workspace = os.getcwd()
+
+    coding_agent = Agent(
+        coding_llm,
+        workspace=workspace,
         denied_drives=DENIED_DRIVES,
     )
+
+    reviewer_agent = ReviewerAgent(
+        reviewer_llm,
+        workspace=workspace,
+        denied_drives=DENIED_DRIVES,
+    )
+
+    return coding_agent, reviewer_agent
 
 
 def main():
     root = tk.Tk()
 
     try:
-        agent = create_agent()
+        agent, reviewer = create_agents()
         startup_error = None
     except Exception as error:
         agent = None
+        reviewer = None
         startup_error = f"Agent 初始化失败：{error}"
 
     CodingAgentUI(
         root,
         agent=agent,
+        reviewer=reviewer,
         startup_error=startup_error,
     )
     root.mainloop()

@@ -675,6 +675,7 @@ class RunCommandTool(Tool):
             child_env = os.environ.copy()
             child_env.pop("OPENAI_API_KEY", None)
             child_env.pop("DEEPSEEK_API_KEY", None)
+            child_env.pop("REVIEWER_API_KEY", None)
 
             result = subprocess.run(
                 [executable, *args],

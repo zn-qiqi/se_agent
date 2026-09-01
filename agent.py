@@ -18,28 +18,49 @@ class Agent:
         max_context_tokens=16000,
         max_recent_groups=12,
         reserved_tokens=4000,
+        system_prompt=None,
+        allowed_tool_names=None,
     ):
         self.llm = llm
         self.max_steps = max_steps
         self.max_tool_calls = max_tool_calls
         self.max_consecutive_errors = max_consecutive_errors
 
-        self.tools = create_tools(
+        all_tools = create_tools(
             os.path.abspath(workspace),
             denied_drives,
         )
 
+        if allowed_tool_names is None:
+            self.tools = all_tools
+        else:
+            allowed_tool_names = set(allowed_tool_names)
+            unknown_tools = allowed_tool_names - set(all_tools)
+
+            if unknown_tools:
+                raise ValueError(
+                    f"Unknown allowed tools: {sorted(unknown_tools)}"
+                )
+
+            self.tools = {
+                name: tool
+                for name, tool in all_tools.items()
+                if name in allowed_tool_names
+            }
+
+        default_system_prompt = (
+            "You are a coding agent. "
+            "You can read and write files, inspect directories, "
+            "and execute commands using the provided tools. "
+            "Use tools when necessary to complete the user's task. "
+            "You are running on Windows. "
+            "When running compiled programs, use their .exe filename. "
+            "Do not use bash or Unix-style ./program commands."
+        )
+
         self.system_message = {
             "role": "system",
-            "content": (
-                "You are a coding agent. "
-                "You can read and write files, inspect directories, "
-                "and execute commands using the provided tools. "
-                "Use tools when necessary to complete the user's task."
-                "You are running on Windows. "
-                "When running a compiled executable, use its .exe filename, "
-                "for example .\\program.exe. Do not use bash or Unix-style ./program commands. "
-            ),
+            "content": system_prompt or default_system_prompt,
         }
 
         self.messages = [copy.deepcopy(self.system_message)]
