@@ -193,7 +193,10 @@ class ContextManager:
 
     def _summary_message(self):
         return {
-            "role": "system",
+            # 摘要充当被压缩历史的用户侧上下文。使用 user 而不是再插入
+            # 一条 system 消息，可保持 system -> user -> assistant/tool 的
+            # 合法顺序，并兼容对消息序列校验更严格的 API。
+            "role": "user",
             "content": (
                 SUMMARY_PREFIX
                 + json.dumps(
@@ -206,8 +209,7 @@ class ContextManager:
 
     def _is_summary_message(self, message):
         return (
-            message.get("role") == "system"
-            and isinstance(
+            isinstance(
                 message.get("content"),
                 str,
             )

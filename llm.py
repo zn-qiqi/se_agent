@@ -34,6 +34,21 @@ class LLM:
             base_url=base_url,
         )
 
+    def _api_status_detail(self, error):
+        """提取兼容接口返回的业务错误码与消息。"""
+        body = getattr(error, "body", None)
+        if not isinstance(body, dict):
+            return ""
+
+        detail = body.get("error", body)
+        if not isinstance(detail, dict):
+            return ""
+
+        code = detail.get("code")
+        message = detail.get("message")
+        parts = [str(value) for value in (code, message) if value]
+        return " - ".join(parts)
+
     def _wait_before_retry(
         self,
         attempt,
@@ -109,8 +124,11 @@ class LLM:
                         f"API server error ({status_code})",
                     )
                 else:
+                    detail = self._api_status_detail(error)
+                    detail_suffix = f": {detail}" if detail else ""
                     raise LLMRequestError(
-                        f"API request failed with status {status_code}"
+                        "API request failed with status "
+                        f"{status_code}{detail_suffix}"
                     ) from error
 
             except OpenAIError as error:

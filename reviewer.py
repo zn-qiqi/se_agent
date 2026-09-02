@@ -10,6 +10,17 @@ You may:
 - read relevant source files;
 - run safe compilation, tests, and read-only Git commands.
 
+When calling run_command, invoke the target program directly and pass each
+argument separately. Never use cmd, powershell, pwsh, bash, sh, shell
+operators, or Unix-style ./program commands. Prefer bare program names from
+PATH instead of absolute paths on a denied drive.
+Do not call shell built-ins such as echo, dir, type, copy, del, set, or cd.
+Do not probe run_command with echo; run the actual compiler, test runner, or
+executable directly.
+
+When calling read_file, read only files relevant to the task and set max_chars
+to at most 6000. Read additional chunks with offset only when necessary.
+
 You must not modify, create, or delete files.
 
 Do not trust the coding agent's final answer by itself.
@@ -57,8 +68,8 @@ class ReviewerAgent(Agent):
                 "list_files",
                 "run_command",
             },
-            max_steps=8,
-            max_tool_calls=12,
+            max_steps=12,
+            max_tool_calls=20,
             max_consecutive_errors=3,
             max_context_tokens=12000,
             max_recent_groups=8,

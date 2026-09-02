@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
 import locale
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 
 MAX_FILE_OUTPUT_CHARS = 20000
@@ -35,6 +37,31 @@ READ_ONLY_GIT_COMMANDS = {
     "show",
     "grep",
     "ls-files",
+}
+
+SHELL_PROGRAMS = {
+    "bash",
+    "cmd",
+    "command",
+    "powershell",
+    "pwsh",
+    "sh",
+    "wsl",
+}
+
+SHELL_BUILTINS = {
+    "cd",
+    "cls",
+    "copy",
+    "del",
+    "dir",
+    "echo",
+    "erase",
+    "move",
+    "ren",
+    "rename",
+    "set",
+    "type",
 }
 
 
@@ -574,7 +601,10 @@ class RunCommandTool(Tool):
     name = "run_command"
     description = (
         "安全执行编译、测试或运行命令。program和args必须分别提供；"
-        "允许直接运行未禁用盘符中真实存在的.exe文件。"
+        "直接填写python、g++、git或目标.exe，不要使用cmd、powershell、"
+        "bash等shell，也不要调用echo、dir等shell内置命令。允许从PATH"
+        "启动可信程序，也允许直接运行"
+        "未禁用盘符中真实存在的.exe文件。"
     )
 
     parameters = {
@@ -613,18 +643,63 @@ class RunCommandTool(Tool):
         program_name = self._program_name(program)
         explicit_path = os.path.isabs(program) or bool(os.path.dirname(program))
 
-        # 仅允许通过PATH查找白名单程序。显式路径仍需接受盘符检查，
-        # 防止C:\other\python.exe之类的路径绕过禁止盘符。
+        if program_name in SHELL_PROGRAMS:
+            raise ValueError(
+                f"Shell program is not allowed: {program}. "
+                "Run the target program directly and put each argument "
+                "in the args array."
+            )
+
+        if program_name in SHELL_BUILTINS:
+            raise ValueError(
+                f"Shell built-in is not executable directly: {program}. "
+                "Do not probe the command runner with shell built-ins; "
+                "run the actual compiler, test runner, or executable."
+            )
+
+        # 通过PATH启动白名单程序时，程序本身可以安装在禁止盘符；
+        # 文件参数仍由_check_arguments拒绝访问禁止盘符。
         if program_name in SAFE_PROGRAMS and not explicit_path:
             return program
 
-        # 显式或相对.exe路径可以位于任意未禁用的本地盘符。
-        candidate = self.resolve_path(program)
+        if os.path.isabs(program):
+            candidate = os.path.realpath(program)
+        else:
+            candidate = os.path.realpath(os.path.join(self.workspace, program))
+
+        drive, _ = os.path.splitdrive(candidate)
+        if len(drive) != 2 or drive[1] != ":":
+            raise ValueError("Only local drive paths are allowed")
+
+        normalized_drive = os.path.normcase(drive)
+        normalized_candidate = os.path.normcase(candidate)
+
+        if normalized_drive in self.denied_drives:
+            trusted_paths = self._trusted_program_paths(program_name)
+            if normalized_candidate not in trusted_paths:
+                raise ValueError(f"Access to drive {drive} is not allowed")
 
         if candidate.lower().endswith(".exe") and os.path.isfile(candidate):
             return candidate
 
         raise ValueError(f"Program is not allowed: {program}")
+
+    def _trusted_program_paths(self, program_name):
+        """返回PATH或当前Python解释器对应的可信可执行文件路径。"""
+        if program_name not in SAFE_PROGRAMS:
+            return set()
+
+        paths = set()
+        for name in (program_name, f"{program_name}.exe"):
+            resolved = shutil.which(name)
+            if resolved:
+                paths.add(os.path.normcase(os.path.realpath(resolved)))
+
+        current_python_name = self._program_name(sys.executable)
+        if program_name == current_python_name:
+            paths.add(os.path.normcase(os.path.realpath(sys.executable)))
+
+        return paths
 
     def _check_arguments(self, program, args):
         if not isinstance(args, list):

@@ -43,6 +43,34 @@ class ContextManagerTests(unittest.TestCase):
             and message["content"].startswith(SUMMARY_PREFIX)
         ]
         self.assertEqual(len(summary_messages), 1)
+        self.assertEqual(summary_messages[0]["role"], "user")
+
+    def test_compacted_tool_history_has_provider_compatible_roles(self):
+        manager = ContextManager(
+            max_context_tokens=100000,
+            max_recent_groups=1,
+            min_recent_groups=1,
+            reserved_tokens=1000,
+        )
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "old request"},
+            {"role": "assistant", "content": "old answer"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call-1", "type": "function"}],
+            },
+            tool_message("read_file", path="sample.py"),
+        ]
+
+        compacted = manager.compact(messages)
+
+        self.assertEqual(
+            [message["role"] for message in compacted],
+            ["system", "user", "assistant", "tool"],
+        )
+        self.assertTrue(compacted[1]["content"].startswith(SUMMARY_PREFIX))
 
     def test_tool_call_and_results_are_not_split(self):
         manager = ContextManager(
@@ -114,6 +142,7 @@ class ContextManagerTests(unittest.TestCase):
             message
             for message in compacted
             if message["role"] != "system"
+            and not message["content"].startswith(SUMMARY_PREFIX)
         ]
 
         self.assertEqual(len(conversation_messages), 1)

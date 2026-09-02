@@ -55,7 +55,14 @@ class Agent:
             "Use tools when necessary to complete the user's task. "
             "You are running on Windows. "
             "When running compiled programs, use their .exe filename. "
-            "Do not use bash or Unix-style ./program commands."
+            "Call run_command with the target program directly and put "
+            "each argument in the args array. Do not use cmd, powershell, "
+            "pwsh, bash, sh, shell operators, or Unix-style ./program commands. "
+            "Do not call shell built-ins such as echo, dir, type, copy, "
+            "del, set, or cd; run the actual compiler, test runner, or "
+            "executable directly. "
+            "Use bare program names such as python, g++, git, and pytest "
+            "instead of absolute paths on a denied drive."
         )
 
         self.system_message = {
@@ -224,6 +231,19 @@ class Agent:
             "role": "assistant",
             "content": response.content,
         }
+
+        # GLM 等带思考模式的 OpenAI 兼容接口会在工具调用响应中返回
+        # reasoning_content，并要求下一轮请求原样带回该字段。
+        response_data = {}
+        if hasattr(response, "model_dump"):
+            response_data = response.model_dump(exclude_none=True)
+
+        reasoning_content = response_data.get(
+            "reasoning_content",
+            getattr(response, "reasoning_content", None),
+        )
+        if reasoning_content is not None:
+            message["reasoning_content"] = reasoning_content
 
         if response.tool_calls:
             tool_calls = []

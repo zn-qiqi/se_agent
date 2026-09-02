@@ -85,6 +85,19 @@ class AgentTests(unittest.TestCase):
         self.assertIsInstance(assistant_message["tool_calls"][0], dict)
         self.assertEqual(assistant_message["tool_calls"][0]["id"], "call-1")
 
+    def test_reasoning_content_is_preserved_for_tool_follow_up(self):
+        tool_call = make_tool_call("call-1")
+        response = SimpleNamespace(
+            content=None,
+            reasoning_content="internal reasoning",
+            tool_calls=[tool_call],
+        )
+        agent = Agent(SequenceLLM([]))
+
+        message = agent._assistant_message_to_dict(response)
+
+        self.assertEqual(message["reasoning_content"], "internal reasoning")
+
     def test_context_snapshot_can_be_restored(self):
         agent = Agent(SequenceLLM([]))
         snapshot = agent.snapshot_context()

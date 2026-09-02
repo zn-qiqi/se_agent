@@ -24,6 +24,9 @@ class ReviewerAgentTests(unittest.TestCase):
             reviewer.system_message["content"],
             str,
         )
+        self.assertEqual(reviewer.max_steps, 12)
+        self.assertEqual(reviewer.max_tool_calls, 20)
+        self.assertIn("Never use cmd", reviewer.system_message["content"])
 
     def test_review_builds_an_independent_review_task(self):
         reviewer = ReviewerAgent(FinalResponseLLM())

@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from openai import APIConnectionError
+from openai import APIConnectionError, BadRequestError
 
 from llm import LLM, LLMRequestError
 
@@ -70,6 +70,28 @@ class LLMTests(unittest.TestCase):
         llm, _ = make_llm([SimpleNamespace(choices=[])])
 
         with self.assertRaisesRegex(LLMRequestError, "no choices"):
+            llm.chat([], [])
+
+    def test_api_status_error_includes_provider_detail(self):
+        response = SimpleNamespace(
+            status_code=400,
+            headers={},
+            request=SimpleNamespace(
+                method="POST",
+                url="https://example.test/v1/chat",
+            ),
+        )
+        error = BadRequestError(
+            "bad request",
+            response=response,
+            body={"error": {"code": "1261", "message": "Prompt too long"}},
+        )
+        llm, _ = make_llm([error])
+
+        with self.assertRaisesRegex(
+            LLMRequestError,
+            "1261 - Prompt too long",
+        ):
             llm.chat([], [])
 
 
